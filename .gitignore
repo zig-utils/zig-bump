@@ -1,0 +1,29 @@
+zig-out/
+zig-cache/
+.zig-cache/
+*.swp
+*.swo
+*~
+.DS_Store
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.idb
+*.ilk
+*.obj
+*.lib
+*.exp
+*.dSYM/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Test artifacts
+test_package.json
+*.test

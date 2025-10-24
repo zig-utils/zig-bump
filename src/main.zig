@@ -72,10 +72,26 @@ pub fn main() !void {
         }
     }
 
-    const rel_type = release_type orelse {
-        try printHelp();
-        return;
-    };
+    // If no release type provided, show interactive prompt
+    const rel_type_owned = if (release_type == null) blk: {
+        // First, try to read the current version to show options
+        const content_peek = std.fs.cwd().readFileAlloc(allocator, "build.zig.zon", 1024 * 1024) catch {
+            try printHelp();
+            return;
+        };
+        defer allocator.free(content_peek);
+
+        const current_ver = (try findVersion(allocator, content_peek)) orelse {
+            try printHelp();
+            return;
+        };
+        defer allocator.free(current_ver);
+
+        break :blk try promptForVersion(allocator, current_ver);
+    } else null;
+    defer if (rel_type_owned) |owned| allocator.free(owned);
+
+    const rel_type = rel_type_owned orelse release_type.?;
 
     // Read build.zig.zon
     const content = try std.fs.cwd().readFileAlloc(allocator, "build.zig.zon", 1024 * 1024);
@@ -331,12 +347,53 @@ fn formatCommitMessage(allocator: std.mem.Allocator, version: []const u8) ![]u8 
     , .{version});
 }
 
+fn promptForVersion(allocator: std.mem.Allocator, current_version: []const u8) ![]const u8 {
+    // Calculate all possible next versions
+    const major_next = try bumpVersion(allocator, current_version, "major");
+    defer allocator.free(major_next);
+
+    const minor_next = try bumpVersion(allocator, current_version, "minor");
+    defer allocator.free(minor_next);
+
+    const patch_next = try bumpVersion(allocator, current_version, "patch");
+    defer allocator.free(patch_next);
+
+    std.debug.print("\n", .{});
+    std.debug.print("Current version: \x1b[36m{s}\x1b[0m\n\n", .{current_version});
+    std.debug.print("Select version bump:\n\n", .{});
+    std.debug.print("  \x1b[33m1)\x1b[0m patch  \x1b[90m{s}\x1b[0m → \x1b[32m{s}\x1b[0m\n", .{current_version, patch_next});
+    std.debug.print("  \x1b[33m2)\x1b[0m minor  \x1b[90m{s}\x1b[0m → \x1b[32m{s}\x1b[0m\n", .{current_version, minor_next});
+    std.debug.print("  \x1b[33m3)\x1b[0m major  \x1b[90m{s}\x1b[0m → \x1b[32m{s}\x1b[0m\n", .{current_version, major_next});
+    std.debug.print("\n", .{});
+    std.debug.print("Enter selection (1-3): ", .{});
+
+    const stdin = std.posix.STDIN_FILENO;
+    var stdin_file = std.fs.File{ .handle = stdin };
+
+    var buf: [100]u8 = undefined;
+    const len = try stdin_file.read(&buf);
+    const input = buf[0..len];
+
+    const trimmed = std.mem.trim(u8, input, &std.ascii.whitespace);
+
+    if (std.mem.eql(u8, trimmed, "1")) {
+        return try allocator.dupe(u8, "patch");
+    } else if (std.mem.eql(u8, trimmed, "2")) {
+        return try allocator.dupe(u8, "minor");
+    } else if (std.mem.eql(u8, trimmed, "3")) {
+        return try allocator.dupe(u8, "major");
+    } else {
+        std.debug.print("Invalid selection. Exiting.\n", .{});
+        return error.InvalidSelection;
+    }
+}
+
 fn printHelp() !void {
     const help =
-        \\zig-bump - Version bumper for Zig projects
+        \\bump - Version bumper for Zig projects (zig-bump)
         \\
         \\USAGE:
-        \\    zig-bump <release-type> [options]
+        \\    bump <release-type> [options]
         \\
         \\RELEASE TYPES:
         \\    major          Bump major version (1.0.0 -> 2.0.0)
@@ -362,12 +419,12 @@ fn printHelp() !void {
         \\    -h, --help             Show this help message
         \\
         \\EXAMPLES:
-        \\    zig-bump patch                    # Bump patch version
-        \\    zig-bump minor --all              # Bump, commit, tag, and push
-        \\    zig-bump major --no-push          # Bump and commit/tag locally
-        \\    zig-bump patch --dry-run          # Preview changes
-        \\    zig-bump minor --no-commit        # Just update version file
-        \\    zig-bump patch --tag-name v1.0.0  # Custom tag name
+        \\    bump patch                    # Bump patch version
+        \\    bump minor --all              # Bump, commit, tag, and push
+        \\    bump major --no-push          # Bump and commit/tag locally
+        \\    bump patch --dry-run          # Preview changes
+        \\    bump minor --no-commit        # Just update version file
+        \\    bump patch --tag-name v1.0.0  # Custom tag name
         \\
     ;
     std.debug.print("{s}", .{help});

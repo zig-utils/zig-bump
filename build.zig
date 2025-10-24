@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
 
     // Create the CLI executable
     const exe = b.addExecutable(.{
-        .name = "zig-bump",
+        .name = "bump",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,

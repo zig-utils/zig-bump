@@ -393,7 +393,8 @@ fn printHelp() !void {
         \\bump - Version bumper for Zig projects (zig-bump)
         \\
         \\USAGE:
-        \\    bump <release-type> [options]
+        \\    bump [release-type] [options]
+        \\    bump                        # Interactive mode
         \\
         \\RELEASE TYPES:
         \\    major          Bump major version (1.0.0 -> 2.0.0)
@@ -419,6 +420,7 @@ fn printHelp() !void {
         \\    -h, --help             Show this help message
         \\
         \\EXAMPLES:
+        \\    bump                          # Interactive mode (choose version)
         \\    bump patch                    # Bump patch version
         \\    bump minor --all              # Bump, commit, tag, and push
         \\    bump major --no-push          # Bump and commit/tag locally

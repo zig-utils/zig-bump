@@ -8,6 +8,7 @@ const Config = struct {
     yes: bool = false,
     sign: bool = false,
     no_verify: bool = false,
+    changelog: bool = false,
     tag_name: ?[]const u8 = null,
     tag_message: ?[]const u8 = null,
 };
@@ -33,6 +34,7 @@ pub fn main() !void {
             config.commit = true;
             config.tag = true;
             config.push = true;
+            config.changelog = true;
         } else if (std.mem.eql(u8, arg, "--commit") or std.mem.eql(u8, arg, "-c")) {
             config.commit = true;
         } else if (std.mem.eql(u8, arg, "--no-commit")) {
@@ -53,6 +55,8 @@ pub fn main() !void {
             config.sign = true;
         } else if (std.mem.eql(u8, arg, "--no-verify")) {
             config.no_verify = true;
+        } else if (std.mem.eql(u8, arg, "--changelog")) {
+            config.changelog = true;
         } else if (std.mem.eql(u8, arg, "--tag-name")) {
             config.tag_name = args.next() orelse {
                 std.debug.print("Error: --tag-name requires a value\n", .{});
@@ -146,6 +150,14 @@ pub fn main() !void {
         if (!isGitRepository(allocator)) {
             std.debug.print("\nWarning: Not a git repository, skipping git operations\n", .{});
         } else {
+            // Generate changelog before committing if requested
+            if (config.changelog) {
+                std.debug.print("Generating changelog...\n", .{});
+                generateChangelog(allocator, new_version) catch |err| {
+                    std.debug.print("Warning: Failed to generate changelog: {any}\n", .{err});
+                };
+            }
+
             // Stage changes
             try gitAdd(allocator, "build.zig.zon");
 
@@ -219,6 +231,189 @@ fn bumpVersion(allocator: std.mem.Allocator, version: []const u8, release_type: 
     }
 
     return try std.fmt.allocPrint(allocator, "{d}.{d}.{d}", .{ parts[0], parts[1], parts[2] });
+}
+
+// Changelog generation functions
+fn getCommitsSinceLastTag(allocator: std.mem.Allocator) ![][]u8 {
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "git", "describe", "--tags", "--abbrev=0" },
+    });
+
+    defer allocator.free(result.stderr);
+
+    var commits_argv: [5][]const u8 = undefined;
+    commits_argv[0] = "git";
+    commits_argv[1] = "log";
+    commits_argv[2] = "--oneline";
+    commits_argv[3] = "--no-merges";
+
+    const has_tag = result.term.Exited == 0 and result.stdout.len > 0;
+    const tag_range = if (has_tag) blk: {
+        const tag = std.mem.trimRight(u8, result.stdout, "\n\r");
+        break :blk try std.fmt.allocPrint(allocator, "{s}..HEAD", .{tag});
+    } else null;
+
+    defer if (tag_range) |tr| allocator.free(tr);
+    defer if (has_tag) allocator.free(result.stdout);
+
+    if (tag_range) |tr| {
+        commits_argv[4] = tr;
+    } else {
+        commits_argv[4] = "HEAD";
+    }
+
+    const commits_result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = commits_argv[0..5],
+    });
+
+    defer allocator.free(commits_result.stderr);
+
+    if (commits_result.term.Exited != 0) {
+        allocator.free(commits_result.stdout);
+        return error.GitCommandFailed;
+    }
+
+    var commits = std.ArrayList([]u8){};
+    errdefer {
+        for (commits.items) |commit| {
+            allocator.free(commit);
+        }
+        commits.deinit(allocator);
+    }
+
+    var lines = std.mem.splitScalar(u8, commits_result.stdout, '\n');
+    while (lines.next()) |line| {
+        if (line.len > 0) {
+            try commits.append(allocator, try allocator.dupe(u8, line));
+        }
+    }
+
+    allocator.free(commits_result.stdout);
+    return try commits.toOwnedSlice(allocator);
+}
+
+fn generateChangelog(allocator: std.mem.Allocator, version: []const u8) !void {
+    // Get commits since last tag
+    const commits = try getCommitsSinceLastTag(allocator);
+    defer {
+        for (commits) |commit| {
+            allocator.free(commit);
+        }
+        allocator.free(commits);
+    }
+
+    if (commits.len == 0) {
+        std.debug.print("No commits to add to changelog\n", .{});
+        return;
+    }
+
+    // Read existing changelog or create new one
+    const changelog_path = "CHANGELOG.md";
+    const existing_content = std.fs.cwd().readFileAlloc(allocator, changelog_path, 1024 * 1024 * 10) catch |err| blk: {
+        if (err == error.FileNotFound) {
+            break :blk try allocator.dupe(u8, "# Changelog\n\nAll notable changes to this project will be documented in this file.\n\n");
+        }
+        return err;
+    };
+    defer allocator.free(existing_content);
+
+    // Get current date
+    const timestamp = std.time.timestamp();
+    const epoch_seconds: i64 = timestamp;
+    const days_since_epoch = @divFloor(epoch_seconds, 86400);
+    const days_since_1970 = days_since_epoch;
+
+    // Calculate year, month, day (approximate)
+    const year: i32 = 1970 + @as(i32, @intCast(@divFloor(days_since_1970, 365)));
+    const year_days = days_since_1970 - ((year - 1970) * 365);
+    const month: u8 = @min(12, @as(u8, @intCast(@divFloor(year_days, 30))) + 1);
+    const day: u8 = @min(31, @as(u8, @intCast(@mod(year_days, 30))) + 1);
+
+    // Build new changelog entry
+    var new_entry = std.ArrayList(u8){};
+    defer new_entry.deinit(allocator);
+
+    try new_entry.writer(allocator).print("## [{s}] - {d}-{d:0>2}-{d:0>2}\n\n", .{ version, year, month, day });
+
+    // Categorize commits
+    var features = std.ArrayList([]const u8){};
+    defer features.deinit(allocator);
+    var fixes = std.ArrayList([]const u8){};
+    defer fixes.deinit(allocator);
+    var chores = std.ArrayList([]const u8){};
+    defer chores.deinit(allocator);
+    var other = std.ArrayList([]const u8){};
+    defer other.deinit(allocator);
+
+    for (commits) |commit| {
+        // Skip the hash part and get the message
+        const space_idx = std.mem.indexOfScalar(u8, commit, ' ') orelse continue;
+        const message = commit[space_idx + 1 ..];
+
+        if (std.mem.startsWith(u8, message, "feat:") or std.mem.startsWith(u8, message, "feat(")) {
+            try features.append(allocator, message);
+        } else if (std.mem.startsWith(u8, message, "fix:") or std.mem.startsWith(u8, message, "fix(")) {
+            try fixes.append(allocator, message);
+        } else if (std.mem.startsWith(u8, message, "chore:") or std.mem.startsWith(u8, message, "chore(")) {
+            try chores.append(allocator, message);
+        } else {
+            try other.append(allocator, message);
+        }
+    }
+
+    if (features.items.len > 0) {
+        try new_entry.writer(allocator).writeAll("### Features\n\n");
+        for (features.items) |feat| {
+            try new_entry.writer(allocator).print("- {s}\n", .{feat});
+        }
+        try new_entry.writer(allocator).writeAll("\n");
+    }
+
+    if (fixes.items.len > 0) {
+        try new_entry.writer(allocator).writeAll("### Bug Fixes\n\n");
+        for (fixes.items) |fix| {
+            try new_entry.writer(allocator).print("- {s}\n", .{fix});
+        }
+        try new_entry.writer(allocator).writeAll("\n");
+    }
+
+    if (chores.items.len > 0) {
+        try new_entry.writer(allocator).writeAll("### Chores\n\n");
+        for (chores.items) |chore| {
+            try new_entry.writer(allocator).print("- {s}\n", .{chore});
+        }
+        try new_entry.writer(allocator).writeAll("\n");
+    }
+
+    if (other.items.len > 0) {
+        try new_entry.writer(allocator).writeAll("### Other Changes\n\n");
+        for (other.items) |change| {
+            try new_entry.writer(allocator).print("- {s}\n", .{change});
+        }
+        try new_entry.writer(allocator).writeAll("\n");
+    }
+
+    // Insert new entry after the header
+    const header_end = std.mem.indexOf(u8, existing_content, "\n\n") orelse existing_content.len;
+    const insert_pos = header_end + 2;
+
+    var final_content = std.ArrayList(u8){};
+    defer final_content.deinit(allocator);
+
+    try final_content.appendSlice(allocator, existing_content[0..insert_pos]);
+    try final_content.appendSlice(allocator, new_entry.items);
+    if (insert_pos < existing_content.len) {
+        try final_content.appendSlice(allocator, existing_content[insert_pos..]);
+    }
+
+    // Write the updated changelog
+    const file = try std.fs.cwd().createFile(changelog_path, .{});
+    defer file.close();
+    try file.writeAll(final_content.items);
+
+    std.debug.print("Generated changelog with {d} commit(s)\n", .{commits.len});
 }
 
 // Git helper functions
@@ -402,13 +597,14 @@ fn printHelp() !void {
         \\    patch          Bump patch version (1.0.0 -> 1.0.1)
         \\
         \\GIT OPTIONS:
-        \\    -a, --all              Commit, tag, and push (default: true)
+        \\    -a, --all              Commit, tag, push, and generate changelog
         \\    -c, --commit           Create git commit (default: true)
         \\        --no-commit        Skip git commit
         \\    -t, --tag              Create git tag (default: true)
         \\        --no-tag           Skip git tag
         \\    -p, --push             Push to remote (default: true)
         \\        --no-push          Skip push
+        \\        --changelog        Generate changelog from commits
         \\        --sign             Sign commits and tags
         \\        --no-verify        Skip git hooks
         \\        --tag-name <name>  Custom tag name (default: v{version})

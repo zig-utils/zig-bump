@@ -211,6 +211,18 @@ pub fn versionBump(allocator: Allocator, options: BumpOptions) !BumpResult {
                 std.debug.print("Warning: Not a git repository, skipping git operations\n", .{});
             }
         } else {
+            // Generate changelog before committing if requested
+            if (config.changelog) {
+                if (!config.quiet) {
+                    std.debug.print("Generating changelog...\n", .{});
+                }
+                git.generateChangelog(allocator, new_version_str) catch |err| {
+                    if (!config.quiet) {
+                        std.debug.print("Warning: Failed to generate changelog: {any}\n", .{err});
+                    }
+                };
+            }
+
             // Stage all changes
             try git.stageAll(allocator);
 

@@ -13,17 +13,29 @@ const Config = struct {
     tag_message: ?[]const u8 = null,
 };
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+fn exitedSuccessfully(term: std.process.Child.Term) bool {
+    return switch (term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
+}
+
+fn exitCode(term: std.process.Child.Term) u8 {
+    return switch (term) {
+        .exited => |code| code,
+        else => 1,
+    };
+}
+
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
     var config = Config{};
     var release_type: ?[]const u8 = null;
 
-    // Parse command line args
-    var args = try std.process.argsWithAllocator(allocator);
-    defer args.deinit();
+    // Parse command line args via std.process.Init
+    var args = init.minimal.args.iterate();
     _ = args.skip(); // Skip program name
 
     while (args.next()) |arg| {
@@ -78,8 +90,7 @@ pub fn main() !void {
 
     // If no release type provided, show interactive prompt
     const rel_type_owned = if (release_type == null) blk: {
-        // First, try to read the current version to show options
-        const content_peek = std.fs.cwd().readFileAlloc("build.zig.zon", allocator, std.Io.Limit.limited(1024 * 1024)) catch {
+        const content_peek = std.Io.Dir.cwd().readFileAlloc(io, "build.zig.zon", allocator, std.Io.Limit.limited(1024 * 1024)) catch {
             try printHelp();
             return;
         };
@@ -91,14 +102,14 @@ pub fn main() !void {
         };
         defer allocator.free(current_ver);
 
-        break :blk try promptForVersion(allocator, current_ver);
+        break :blk try promptForVersion(allocator, io, current_ver);
     } else null;
     defer if (rel_type_owned) |owned| allocator.free(owned);
 
     const rel_type = rel_type_owned orelse release_type.?;
 
     // Read build.zig.zon
-    const content = try std.fs.cwd().readFileAlloc("build.zig.zon", allocator, std.Io.Limit.limited(1024 * 1024));
+    const content = try std.Io.Dir.cwd().readFileAlloc(io, "build.zig.zon", allocator, std.Io.Limit.limited(1024 * 1024));
     defer allocator.free(content);
 
     // Find current version
@@ -143,34 +154,30 @@ pub fn main() !void {
     const new_content = try std.mem.replaceOwned(u8, allocator, content, old_needle, new_needle);
     defer allocator.free(new_content);
 
-    try std.fs.cwd().writeFile(.{ .sub_path = "build.zig.zon", .data = new_content });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = "build.zig.zon", .data = new_content });
 
     // Git operations
     if (config.commit or config.tag or config.push) {
-        if (!isGitRepository(allocator)) {
+        if (!isGitRepository(allocator, io)) {
             std.debug.print("\nWarning: Not a git repository, skipping git operations\n", .{});
         } else {
-            // Generate changelog before committing if requested
             if (config.changelog) {
                 std.debug.print("Generating changelog...\n", .{});
-                generateChangelog(allocator, new_version) catch |err| {
+                generateChangelog(allocator, io, new_version) catch |err| {
                     std.debug.print("Warning: Failed to generate changelog: {any}\n", .{err});
                 };
             }
 
-            // Stage changes
-            try gitAdd(allocator, "build.zig.zon");
+            try gitAdd(allocator, io, "build.zig.zon");
 
-            // Create commit
             if (config.commit) {
                 const commit_msg = try formatCommitMessage(allocator, new_version);
                 defer allocator.free(commit_msg);
 
-                try gitCommit(allocator, commit_msg, config.sign, config.no_verify);
+                try gitCommit(allocator, io, commit_msg, config.sign, config.no_verify);
                 std.debug.print("Created git commit\n", .{});
             }
 
-            // Create tag
             if (config.tag) {
                 const tag_name = config.tag_name orelse try std.fmt.allocPrint(allocator, "v{s}", .{new_version});
                 defer if (config.tag_name == null) allocator.free(tag_name);
@@ -178,16 +185,15 @@ pub fn main() !void {
                 const tag_msg = config.tag_message orelse try std.fmt.allocPrint(allocator, "Release {s}", .{tag_name});
                 defer if (config.tag_message == null) allocator.free(tag_msg);
 
-                try gitTag(allocator, tag_name, tag_msg, config.sign);
+                try gitTag(allocator, io, tag_name, tag_msg, config.sign);
                 std.debug.print("Created git tag: {s}\n", .{tag_name});
             }
 
-            // Push to remote
             if (config.push) {
-                if (!hasGitRemote(allocator)) {
+                if (!hasGitRemote(allocator, io)) {
                     std.debug.print("Warning: No git remote configured, skipping push\n", .{});
                 } else {
-                    try gitPush(allocator, config.tag);
+                    try gitPush(allocator, io, config.tag);
                     std.debug.print("Pushed to remote\n", .{});
                 }
             }
@@ -234,9 +240,8 @@ fn bumpVersion(allocator: std.mem.Allocator, version: []const u8, release_type: 
 }
 
 // Changelog generation functions
-fn getCommitsSinceLastTag(allocator: std.mem.Allocator) ![][]u8 {
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+fn getCommitsSinceLastTag(allocator: std.mem.Allocator, io: std.Io) ![][]u8 {
+    const result = try std.process.run(allocator, io, .{
         .argv = &[_][]const u8{ "git", "describe", "--tags", "--abbrev=0" },
     });
 
@@ -248,9 +253,9 @@ fn getCommitsSinceLastTag(allocator: std.mem.Allocator) ![][]u8 {
     commits_argv[2] = "--oneline";
     commits_argv[3] = "--no-merges";
 
-    const has_tag = result.term.Exited == 0 and result.stdout.len > 0;
+    const has_tag = exitedSuccessfully(result.term) and result.stdout.len > 0;
     const tag_range = if (has_tag) blk: {
-        const tag = std.mem.trimRight(u8, result.stdout, "\n\r");
+        const tag = std.mem.trimEnd(u8, result.stdout, "\n\r");
         break :blk try std.fmt.allocPrint(allocator, "{s}..HEAD", .{tag});
     } else null;
 
@@ -263,14 +268,13 @@ fn getCommitsSinceLastTag(allocator: std.mem.Allocator) ![][]u8 {
         commits_argv[4] = "HEAD";
     }
 
-    const commits_result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const commits_result = try std.process.run(allocator, io, .{
         .argv = commits_argv[0..5],
     });
 
     defer allocator.free(commits_result.stderr);
 
-    if (commits_result.term.Exited != 0) {
+    if (!exitedSuccessfully(commits_result.term)) {
         allocator.free(commits_result.stdout);
         return error.GitCommandFailed;
     }
@@ -294,9 +298,8 @@ fn getCommitsSinceLastTag(allocator: std.mem.Allocator) ![][]u8 {
     return try commits.toOwnedSlice(allocator);
 }
 
-fn generateChangelog(allocator: std.mem.Allocator, version: []const u8) !void {
-    // Get commits since last tag
-    const commits = try getCommitsSinceLastTag(allocator);
+fn generateChangelog(allocator: std.mem.Allocator, io: std.Io, version: []const u8) !void {
+    const commits = try getCommitsSinceLastTag(allocator, io);
     defer {
         for (commits) |commit| {
             allocator.free(commit);
@@ -309,9 +312,8 @@ fn generateChangelog(allocator: std.mem.Allocator, version: []const u8) !void {
         return;
     }
 
-    // Read existing changelog or create new one
     const changelog_path = "CHANGELOG.md";
-    const existing_content = std.fs.cwd().readFileAlloc(changelog_path, allocator, std.Io.Limit.limited(1024 * 1024 * 10)) catch |err| blk: {
+    const existing_content = std.Io.Dir.cwd().readFileAlloc(io, changelog_path, allocator, std.Io.Limit.limited(1024 * 1024 * 10)) catch |err| blk: {
         if (err == error.FileNotFound) {
             break :blk try allocator.dupe(u8, "# Changelog\n\nAll notable changes to this project will be documented in this file.\n\n");
         }
@@ -319,30 +321,24 @@ fn generateChangelog(allocator: std.mem.Allocator, version: []const u8) !void {
     };
     defer allocator.free(existing_content);
 
-    // Get current date - use a hardcoded approximate date for simplicity
-    // The changelog feature is rarely used, and this avoids Zig 0.16 time API changes
     const ts = std.posix.clock_gettime(std.posix.CLOCK.REALTIME) catch unreachable;
     const epoch_seconds = ts.sec;
     const days_since_epoch = @divFloor(epoch_seconds, 86400);
     const days_since_1970 = days_since_epoch;
 
-    // Calculate year, month, day (approximate)
     const year: i32 = 1970 + @as(i32, @intCast(@divFloor(days_since_1970, 365)));
     const year_days = days_since_1970 - ((year - 1970) * 365);
     const month: u8 = @min(12, @as(u8, @intCast(@divFloor(year_days, 30))) + 1);
     const day: u8 = @min(31, @as(u8, @intCast(@mod(year_days, 30))) + 1);
 
-    // Build new changelog entry using simple string concatenation
     var entry_buf: [16384]u8 = undefined;
     var entry_pos: usize = 0;
 
-    // Write header
     const header = try std.fmt.allocPrint(allocator, "## [{s}] - {d}-{d:0>2}-{d:0>2}\n\n", .{ version, year, month, day });
     defer allocator.free(header);
     @memcpy(entry_buf[entry_pos..][0..header.len], header);
     entry_pos += header.len;
 
-    // Categorize and add commits
     for (commits) |commit| {
         const space_idx = std.mem.indexOfScalar(u8, commit, ' ') orelse continue;
         const message = commit[space_idx + 1 ..];
@@ -356,17 +352,14 @@ fn generateChangelog(allocator: std.mem.Allocator, version: []const u8) !void {
         }
     }
 
-    // Add trailing newline
     if (entry_pos < entry_buf.len) {
         entry_buf[entry_pos] = '\n';
         entry_pos += 1;
     }
 
-    // Insert new entry after the header
     const header_end = std.mem.indexOf(u8, existing_content, "\n\n") orelse existing_content.len;
     const insert_pos = header_end + 2;
 
-    // Build final content
     const final_content = try std.fmt.allocPrint(
         allocator,
         "{s}{s}{s}",
@@ -374,55 +367,51 @@ fn generateChangelog(allocator: std.mem.Allocator, version: []const u8) !void {
     );
     defer allocator.free(final_content);
 
-    // Write the updated changelog
-    const file = try std.fs.cwd().createFile(changelog_path, .{});
-    defer file.close();
-    try file.writeAll(final_content);
+    const file = try std.Io.Dir.cwd().createFile(io, changelog_path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, final_content);
 
     std.debug.print("Generated changelog with {d} commit(s)\n", .{commits.len});
 }
 
 // Git helper functions
-fn isGitRepository(allocator: std.mem.Allocator) bool {
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+fn isGitRepository(allocator: std.mem.Allocator, io: std.Io) bool {
+    const result = std.process.run(allocator, io, .{
         .argv = &[_][]const u8{ "git", "rev-parse", "--git-dir" },
     }) catch return false;
 
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    return result.term.Exited == 0;
+    return exitedSuccessfully(result.term);
 }
 
-fn hasGitRemote(allocator: std.mem.Allocator) bool {
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+fn hasGitRemote(allocator: std.mem.Allocator, io: std.Io) bool {
+    const result = std.process.run(allocator, io, .{
         .argv = &[_][]const u8{ "git", "remote" },
     }) catch return false;
 
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    return result.term.Exited == 0 and result.stdout.len > 0;
+    return exitedSuccessfully(result.term) and result.stdout.len > 0;
 }
 
-fn gitAdd(allocator: std.mem.Allocator, file: []const u8) !void {
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &[_][]const u8{ "git", "add", file },
+fn gitAdd(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8) !void {
+    const result = try std.process.run(allocator, io, .{
+        .argv = &[_][]const u8{ "git", "add", file_path },
     });
 
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term.Exited != 0) {
+    if (!exitedSuccessfully(result.term)) {
         std.debug.print("Git add failed: {s}\n", .{result.stderr});
         return error.GitAddFailed;
     }
 }
 
-fn gitCommit(allocator: std.mem.Allocator, message: []const u8, sign: bool, no_verify: bool) !void {
+fn gitCommit(allocator: std.mem.Allocator, io: std.Io, message: []const u8, sign: bool, no_verify: bool) !void {
     var argv_list = std.ArrayList([]const u8){};
     defer argv_list.deinit(allocator);
 
@@ -434,21 +423,20 @@ fn gitCommit(allocator: std.mem.Allocator, message: []const u8, sign: bool, no_v
     if (sign) try argv_list.append(allocator, "--signoff");
     if (no_verify) try argv_list.append(allocator, "--no-verify");
 
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const result = try std.process.run(allocator, io, .{
         .argv = argv_list.items,
     });
 
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term.Exited != 0) {
+    if (!exitedSuccessfully(result.term)) {
         std.debug.print("Git commit failed: {s}\n", .{result.stderr});
         return error.GitCommitFailed;
     }
 }
 
-fn gitTag(allocator: std.mem.Allocator, tag_name: []const u8, message: []const u8, sign: bool) !void {
+fn gitTag(allocator: std.mem.Allocator, io: std.Io, tag_name: []const u8, message: []const u8, sign: bool) !void {
     var argv_list = std.ArrayList([]const u8){};
     defer argv_list.deinit(allocator);
 
@@ -461,21 +449,20 @@ fn gitTag(allocator: std.mem.Allocator, tag_name: []const u8, message: []const u
 
     if (sign) try argv_list.append(allocator, "--sign");
 
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const result = try std.process.run(allocator, io, .{
         .argv = argv_list.items,
     });
 
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term.Exited != 0) {
+    if (!exitedSuccessfully(result.term)) {
         std.debug.print("Git tag failed: {s}\n", .{result.stderr});
         return error.GitTagFailed;
     }
 }
 
-fn gitPush(allocator: std.mem.Allocator, follow_tags: bool) !void {
+fn gitPush(allocator: std.mem.Allocator, io: std.Io, follow_tags: bool) !void {
     var argv_list = std.ArrayList([]const u8){};
     defer argv_list.deinit(allocator);
 
@@ -484,15 +471,14 @@ fn gitPush(allocator: std.mem.Allocator, follow_tags: bool) !void {
 
     if (follow_tags) try argv_list.append(allocator, "--follow-tags");
 
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const result = try std.process.run(allocator, io, .{
         .argv = argv_list.items,
     });
 
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term.Exited != 0) {
+    if (!exitedSuccessfully(result.term)) {
         std.debug.print("Git push failed: {s}\n", .{result.stderr});
         return error.GitPushFailed;
     }
@@ -506,8 +492,7 @@ fn formatCommitMessage(allocator: std.mem.Allocator, version: []const u8) ![]u8 
     , .{version});
 }
 
-fn promptForVersion(allocator: std.mem.Allocator, current_version: []const u8) ![]const u8 {
-    // Calculate all possible next versions
+fn promptForVersion(allocator: std.mem.Allocator, io: std.Io, current_version: []const u8) ![]const u8 {
     const major_next = try bumpVersion(allocator, current_version, "major");
     defer allocator.free(major_next);
 
@@ -520,17 +505,16 @@ fn promptForVersion(allocator: std.mem.Allocator, current_version: []const u8) !
     std.debug.print("\n", .{});
     std.debug.print("Current version: \x1b[36m{s}\x1b[0m\n\n", .{current_version});
     std.debug.print("Select version bump:\n\n", .{});
-    std.debug.print("  \x1b[33m1)\x1b[0m patch  \x1b[90m{s}\x1b[0m → \x1b[32m{s}\x1b[0m\n", .{current_version, patch_next});
-    std.debug.print("  \x1b[33m2)\x1b[0m minor  \x1b[90m{s}\x1b[0m → \x1b[32m{s}\x1b[0m\n", .{current_version, minor_next});
-    std.debug.print("  \x1b[33m3)\x1b[0m major  \x1b[90m{s}\x1b[0m → \x1b[32m{s}\x1b[0m\n", .{current_version, major_next});
+    std.debug.print("  \x1b[33m1)\x1b[0m patch  \x1b[90m{s}\x1b[0m → \x1b[32m{s}\x1b[0m\n", .{ current_version, patch_next });
+    std.debug.print("  \x1b[33m2)\x1b[0m minor  \x1b[90m{s}\x1b[0m → \x1b[32m{s}\x1b[0m\n", .{ current_version, minor_next });
+    std.debug.print("  \x1b[33m3)\x1b[0m major  \x1b[90m{s}\x1b[0m → \x1b[32m{s}\x1b[0m\n", .{ current_version, major_next });
     std.debug.print("\n", .{});
     std.debug.print("Enter selection (1-3): ", .{});
 
-    const stdin = std.posix.STDIN_FILENO;
-    var stdin_file = std.fs.File{ .handle = stdin };
+    const stdin_file = std.Io.File.stdin();
 
     var buf: [100]u8 = undefined;
-    const len = try stdin_file.read(&buf);
+    const len = try stdin_file.readStreaming(io, &.{&buf});
     const input = buf[0..len];
 
     const trimmed = std.mem.trim(u8, input, &std.ascii.whitespace);

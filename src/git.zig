@@ -407,8 +407,6 @@ pub fn formatCommitMessage(allocator: Allocator, version: []const u8, custom_msg
             \\{s}
             \\
             \\🦎 Generated with [zig-bump](https://github.com/stacksjs/zig-bump)
-            \\
-            \\Co-Authored-By: zig-bump <noreply@stacksjs.org>
         , .{msg});
     }
 
@@ -416,8 +414,6 @@ pub fn formatCommitMessage(allocator: Allocator, version: []const u8, custom_msg
         \\chore: release v{s}
         \\
         \\🦎 Generated with [zig-bump](https://github.com/stacksjs/zig-bump)
-        \\
-        \\Co-Authored-By: zig-bump <noreply@stacksjs.org>
     , .{version});
 }
 
@@ -435,7 +431,7 @@ test "format commit message" {
     defer allocator.free(msg);
 
     try std.testing.expect(std.mem.indexOf(u8, msg, "1.2.3") != null);
-    try std.testing.expect(std.mem.indexOf(u8, msg, "zig-bump") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "Generated with") != null);
 }
 
 test "format custom commit message" {
@@ -445,5 +441,5 @@ test "format custom commit message" {
     defer allocator.free(msg);
 
     try std.testing.expect(std.mem.indexOf(u8, msg, "feat: add new feature") != null);
-    try std.testing.expect(std.mem.indexOf(u8, msg, "zig-bump") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "Generated with") != null);
 }

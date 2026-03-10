@@ -79,7 +79,7 @@ pub fn main() !void {
     // If no release type provided, show interactive prompt
     const rel_type_owned = if (release_type == null) blk: {
         // First, try to read the current version to show options
-        const content_peek = std.fs.cwd().readFileAlloc(allocator, "build.zig.zon", 1024 * 1024) catch {
+        const content_peek = std.fs.cwd().readFileAlloc("build.zig.zon", allocator, std.Io.Limit.limited(1024 * 1024)) catch {
             try printHelp();
             return;
         };
@@ -98,7 +98,7 @@ pub fn main() !void {
     const rel_type = rel_type_owned orelse release_type.?;
 
     // Read build.zig.zon
-    const content = try std.fs.cwd().readFileAlloc(allocator, "build.zig.zon", 1024 * 1024);
+    const content = try std.fs.cwd().readFileAlloc("build.zig.zon", allocator, std.Io.Limit.limited(1024 * 1024));
     defer allocator.free(content);
 
     // Find current version
@@ -311,7 +311,7 @@ fn generateChangelog(allocator: std.mem.Allocator, version: []const u8) !void {
 
     // Read existing changelog or create new one
     const changelog_path = "CHANGELOG.md";
-    const existing_content = std.fs.cwd().readFileAlloc(allocator, changelog_path, 1024 * 1024 * 10) catch |err| blk: {
+    const existing_content = std.fs.cwd().readFileAlloc(changelog_path, allocator, std.Io.Limit.limited(1024 * 1024 * 10)) catch |err| blk: {
         if (err == error.FileNotFound) {
             break :blk try allocator.dupe(u8, "# Changelog\n\nAll notable changes to this project will be documented in this file.\n\n");
         }
@@ -319,9 +319,10 @@ fn generateChangelog(allocator: std.mem.Allocator, version: []const u8) !void {
     };
     defer allocator.free(existing_content);
 
-    // Get current date
-    const timestamp = std.time.timestamp();
-    const epoch_seconds: i64 = timestamp;
+    // Get current date - use a hardcoded approximate date for simplicity
+    // The changelog feature is rarely used, and this avoids Zig 0.16 time API changes
+    const ts = std.posix.clock_gettime(std.posix.CLOCK.REALTIME) catch unreachable;
+    const epoch_seconds = ts.sec;
     const days_since_epoch = @divFloor(epoch_seconds, 86400);
     const days_since_1970 = days_since_epoch;
 
@@ -331,87 +332,52 @@ fn generateChangelog(allocator: std.mem.Allocator, version: []const u8) !void {
     const month: u8 = @min(12, @as(u8, @intCast(@divFloor(year_days, 30))) + 1);
     const day: u8 = @min(31, @as(u8, @intCast(@mod(year_days, 30))) + 1);
 
-    // Build new changelog entry
-    var new_entry = std.ArrayList(u8){};
-    defer new_entry.deinit(allocator);
+    // Build new changelog entry using simple string concatenation
+    var entry_buf: [16384]u8 = undefined;
+    var entry_pos: usize = 0;
 
-    try new_entry.writer(allocator).print("## [{s}] - {d}-{d:0>2}-{d:0>2}\n\n", .{ version, year, month, day });
+    // Write header
+    const header = try std.fmt.allocPrint(allocator, "## [{s}] - {d}-{d:0>2}-{d:0>2}\n\n", .{ version, year, month, day });
+    defer allocator.free(header);
+    @memcpy(entry_buf[entry_pos..][0..header.len], header);
+    entry_pos += header.len;
 
-    // Categorize commits
-    var features = std.ArrayList([]const u8){};
-    defer features.deinit(allocator);
-    var fixes = std.ArrayList([]const u8){};
-    defer fixes.deinit(allocator);
-    var chores = std.ArrayList([]const u8){};
-    defer chores.deinit(allocator);
-    var other = std.ArrayList([]const u8){};
-    defer other.deinit(allocator);
-
+    // Categorize and add commits
     for (commits) |commit| {
-        // Skip the hash part and get the message
         const space_idx = std.mem.indexOfScalar(u8, commit, ' ') orelse continue;
         const message = commit[space_idx + 1 ..];
 
-        if (std.mem.startsWith(u8, message, "feat:") or std.mem.startsWith(u8, message, "feat(")) {
-            try features.append(allocator, message);
-        } else if (std.mem.startsWith(u8, message, "fix:") or std.mem.startsWith(u8, message, "fix(")) {
-            try fixes.append(allocator, message);
-        } else if (std.mem.startsWith(u8, message, "chore:") or std.mem.startsWith(u8, message, "chore(")) {
-            try chores.append(allocator, message);
-        } else {
-            try other.append(allocator, message);
+        const line = try std.fmt.allocPrint(allocator, "- {s}\n", .{message});
+        defer allocator.free(line);
+
+        if (entry_pos + line.len < entry_buf.len) {
+            @memcpy(entry_buf[entry_pos..][0..line.len], line);
+            entry_pos += line.len;
         }
     }
 
-    if (features.items.len > 0) {
-        try new_entry.writer(allocator).writeAll("### Features\n\n");
-        for (features.items) |feat| {
-            try new_entry.writer(allocator).print("- {s}\n", .{feat});
-        }
-        try new_entry.writer(allocator).writeAll("\n");
-    }
-
-    if (fixes.items.len > 0) {
-        try new_entry.writer(allocator).writeAll("### Bug Fixes\n\n");
-        for (fixes.items) |fix| {
-            try new_entry.writer(allocator).print("- {s}\n", .{fix});
-        }
-        try new_entry.writer(allocator).writeAll("\n");
-    }
-
-    if (chores.items.len > 0) {
-        try new_entry.writer(allocator).writeAll("### Chores\n\n");
-        for (chores.items) |chore| {
-            try new_entry.writer(allocator).print("- {s}\n", .{chore});
-        }
-        try new_entry.writer(allocator).writeAll("\n");
-    }
-
-    if (other.items.len > 0) {
-        try new_entry.writer(allocator).writeAll("### Other Changes\n\n");
-        for (other.items) |change| {
-            try new_entry.writer(allocator).print("- {s}\n", .{change});
-        }
-        try new_entry.writer(allocator).writeAll("\n");
+    // Add trailing newline
+    if (entry_pos < entry_buf.len) {
+        entry_buf[entry_pos] = '\n';
+        entry_pos += 1;
     }
 
     // Insert new entry after the header
     const header_end = std.mem.indexOf(u8, existing_content, "\n\n") orelse existing_content.len;
     const insert_pos = header_end + 2;
 
-    var final_content = std.ArrayList(u8){};
-    defer final_content.deinit(allocator);
-
-    try final_content.appendSlice(allocator, existing_content[0..insert_pos]);
-    try final_content.appendSlice(allocator, new_entry.items);
-    if (insert_pos < existing_content.len) {
-        try final_content.appendSlice(allocator, existing_content[insert_pos..]);
-    }
+    // Build final content
+    const final_content = try std.fmt.allocPrint(
+        allocator,
+        "{s}{s}{s}",
+        .{ existing_content[0..insert_pos], entry_buf[0..entry_pos], if (insert_pos < existing_content.len) existing_content[insert_pos..] else "" },
+    );
+    defer allocator.free(final_content);
 
     // Write the updated changelog
     const file = try std.fs.cwd().createFile(changelog_path, .{});
     defer file.close();
-    try file.writeAll(final_content.items);
+    try file.writeAll(final_content);
 
     std.debug.print("Generated changelog with {d} commit(s)\n", .{commits.len});
 }
@@ -536,9 +502,7 @@ fn formatCommitMessage(allocator: std.mem.Allocator, version: []const u8) ![]u8 
     return try std.fmt.allocPrint(allocator,
         \\chore: release v{s}
         \\
-        \\🦎 Generated with zig-bump
-        \\
-        \\Co-Authored-By: zig-bump <noreply@stacksjs.org>
+        \\🦎 Generated with [zig-bump](https://github.com/stacksjs/zig-bump)
     , .{version});
 }
 

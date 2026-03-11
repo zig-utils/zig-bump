@@ -321,8 +321,7 @@ fn generateChangelog(allocator: std.mem.Allocator, io: std.Io, version: []const 
     };
     defer allocator.free(existing_content);
 
-    const ts = std.posix.clock_gettime(std.posix.CLOCK.REALTIME) catch unreachable;
-    const epoch_seconds = ts.sec;
+    const epoch_seconds = std.Io.Timestamp.now(io, .real).toSeconds();
     const days_since_epoch = @divFloor(epoch_seconds, 86400);
     const days_since_1970 = days_since_epoch;
 

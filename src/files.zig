@@ -38,7 +38,7 @@ pub const FileType = enum {
 
     pub fn isTomlFile(self: FileType) bool {
         return self == .cargo_toml or self == .pyproject_toml or
-               self == .ion_toml or self == .generic_toml;
+            self == .ion_toml or self == .generic_toml;
     }
 };
 
@@ -214,8 +214,8 @@ fn findVersionInText(allocator: Allocator, content: []const u8) !?[]u8 {
     // Look for semantic version patterns in text
     // Pattern: \bX.Y.Z\b (word boundaries)
     const semver_pattern = std.mem.indexOf(u8, content, "0.") orelse
-                           std.mem.indexOf(u8, content, "1.") orelse
-                           return null;
+        std.mem.indexOf(u8, content, "1.") orelse
+        return null;
 
     // Extract the version starting from this position
     var end = semver_pattern;

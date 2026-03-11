@@ -38,7 +38,7 @@ pub const FileType = enum {
 
     pub fn isTomlFile(self: FileType) bool {
         return self == .cargo_toml or self == .pyproject_toml or
-               self == .ion_toml or self == .generic_toml;
+            self == .ion_toml or self == .generic_toml;
     }
 };
 

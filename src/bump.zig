@@ -29,13 +29,6 @@ pub const BumpResult = struct {
     }
 };
 
-fn termSuccess(term: std.process.Child.Term) bool {
-    return switch (term) {
-        .Exited => |code| code == 0,
-        else => false,
-    };
-}
-
 pub fn versionBump(allocator: Allocator, options: BumpOptions) !BumpResult {
     const config = options.config;
 
@@ -46,12 +39,10 @@ pub fn versionBump(allocator: Allocator, options: BumpOptions) !BumpResult {
             std.debug.print("Warning: You have uncommitted changes.\n", .{});
             if (!config.yes) {
                 std.debug.print("Continue anyway? (y/N): ", .{});
-                const stdin = std.fs.File.stdin();
+                const stdin = std.io.getStdIn().reader();
                 var buf: [10]u8 = undefined;
-                const n = stdin.read(&buf) catch return error.Cancelled;
-                if (n == 0) return error.Cancelled;
-                const input = std.mem.trim(u8, buf[0..n], &std.ascii.whitespace);
-                if (input.len == 0 or (input[0] != 'y' and input[0] != 'Y')) {
+                const input = try stdin.readUntilDelimiterOrEof(&buf, '\n');
+                if (input == null or (input.?.len > 0 and input.?[0] != 'y' and input.?[0] != 'Y')) {
                     return error.Cancelled;
                 }
             }
@@ -127,11 +118,10 @@ pub fn versionBump(allocator: Allocator, options: BumpOptions) !BumpResult {
     // Confirmation prompt
     if (!config.yes and !config.ci) {
         std.debug.print("\nWill update {d} file(s). Continue? (Y/n): ", .{files_to_update.len});
-        const stdin = std.fs.File.stdin();
+        const stdin = std.io.getStdIn().reader();
         var buf: [10]u8 = undefined;
-        const n = stdin.read(&buf) catch return error.Cancelled;
-        if (n > 0) {
-            const inp = std.mem.trim(u8, buf[0..n], &std.ascii.whitespace);
+        const input = try stdin.readUntilDelimiterOrEof(&buf, '\n');
+        if (input) |inp| {
             if (inp.len > 0 and inp[0] != 'y' and inp[0] != 'Y' and inp[0] != '\r') {
                 return error.Cancelled;
             }
@@ -166,12 +156,12 @@ pub fn versionBump(allocator: Allocator, options: BumpOptions) !BumpResult {
     }
 
     // Update all files
-    var updated_files: std.ArrayList([]const u8) = .empty;
+    var updated_files = std.ArrayList([]const u8).init(allocator);
     errdefer {
         for (updated_files.items) |file| {
             allocator.free(file);
         }
-        updated_files.deinit(allocator);
+        updated_files.deinit();
     }
 
     for (files_to_update) |file_path| {
@@ -185,7 +175,7 @@ pub fn versionBump(allocator: Allocator, options: BumpOptions) !BumpResult {
         try file_info.updateVersion(current_version_str, new_version_str);
         try file_info.write();
 
-        try updated_files.append(allocator, try allocator.dupe(u8, file_path));
+        try updated_files.append(try allocator.dupe(u8, file_path));
     }
 
     // Execute custom commands
@@ -203,7 +193,7 @@ pub fn versionBump(allocator: Allocator, options: BumpOptions) !BumpResult {
             defer allocator.free(result.stdout);
             defer allocator.free(result.stderr);
 
-            if (!termSuccess(result.term)) {
+            if (result.term.Exited != 0) {
                 std.debug.print("Command failed: {s}\n", .{result.stderr});
                 return error.CommandFailed;
             }
@@ -290,7 +280,7 @@ pub fn versionBump(allocator: Allocator, options: BumpOptions) !BumpResult {
     return BumpResult{
         .old_version = try allocator.dupe(u8, current_version_str),
         .new_version = try allocator.dupe(u8, new_version_str),
-        .files_updated = try updated_files.toOwnedSlice(allocator),
+        .files_updated = try updated_files.toOwnedSlice(),
         .allocator = allocator,
     };
 }

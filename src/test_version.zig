@@ -25,7 +25,7 @@ fn bumpVersion(allocator: std.mem.Allocator, version: []const u8, release_type: 
         return error.InvalidReleaseType;
     }
 
-    return try std.fmt.allocPrint(allocator, "{d}.{d}.{d}", .{ parts[0], parts[1], parts[2] });
+    return try std.fmt.allocPrint(allocator, "{d}.{d}.{d}", .{parts[0], parts[1], parts[2]});
 }
 
 fn findVersion(allocator: std.mem.Allocator, content: []const u8) !?[]u8 {

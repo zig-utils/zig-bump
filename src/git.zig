@@ -8,13 +8,6 @@ pub const GitError = error{
     NoRemote,
 };
 
-fn termSuccess(term: std.process.Child.Term) bool {
-    return switch (term) {
-        .Exited => |code| code == 0,
-        else => false,
-    };
-}
-
 pub fn isGitRepository(allocator: Allocator) bool {
     const result = std.process.Child.run(.{
         .allocator = allocator,
@@ -24,7 +17,7 @@ pub fn isGitRepository(allocator: Allocator) bool {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    return termSuccess(result.term);
+    return result.term.Exited == 0;
 }
 
 pub fn hasUncommittedChanges(allocator: Allocator) !bool {
@@ -36,7 +29,7 @@ pub fn hasUncommittedChanges(allocator: Allocator) !bool {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (!termSuccess(result.term)) {
+    if (result.term.Exited != 0) {
         return GitError.CommandFailed;
     }
 
@@ -52,7 +45,7 @@ pub fn getCurrentBranch(allocator: Allocator) ![]u8 {
 
     defer allocator.free(result.stderr);
 
-    if (!termSuccess(result.term)) {
+    if (result.term.Exited != 0) {
         allocator.free(result.stdout);
         return GitError.CommandFailed;
     }
@@ -71,23 +64,23 @@ pub fn stageAll(allocator: Allocator) !void {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (!termSuccess(result.term)) {
+    if (result.term.Exited != 0) {
         return GitError.CommandFailed;
     }
 }
 
 pub fn commit(allocator: Allocator, message: []const u8, sign: bool, no_verify: bool) !void {
-    var argv: std.ArrayList([]const u8) = .empty;
-    defer argv.deinit(allocator);
+    var argv = std.ArrayList([]const u8).init(allocator);
+    defer argv.deinit();
 
-    try argv.appendSlice(allocator, &[_][]const u8{ "git", "commit", "-m", message });
+    try argv.appendSlice(&[_][]const u8{ "git", "commit", "-m", message });
 
     if (sign) {
-        try argv.append(allocator, "--signoff");
+        try argv.append("--signoff");
     }
 
     if (no_verify) {
-        try argv.append(allocator, "--no-verify");
+        try argv.append("--no-verify");
     }
 
     const result = try std.process.Child.run(.{
@@ -98,17 +91,17 @@ pub fn commit(allocator: Allocator, message: []const u8, sign: bool, no_verify: 
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (!termSuccess(result.term)) {
+    if (result.term.Exited != 0) {
         std.debug.print("Git commit failed: {s}\n", .{result.stderr});
         return GitError.CommandFailed;
     }
 }
 
 pub fn createTag(allocator: Allocator, tag_name: []const u8, message: ?[]const u8, sign: bool) !void {
-    var argv: std.ArrayList([]const u8) = .empty;
-    defer argv.deinit(allocator);
+    var argv = std.ArrayList([]const u8).init(allocator);
+    defer argv.deinit();
 
-    try argv.appendSlice(allocator, &[_][]const u8{ "git", "tag", "-a", tag_name, "-m" });
+    try argv.appendSlice(&[_][]const u8{ "git", "tag", "-a", tag_name, "-m" });
 
     const tag_message = message orelse blk: {
         const default_msg = try std.fmt.allocPrint(allocator, "Release {s}", .{tag_name});
@@ -116,10 +109,10 @@ pub fn createTag(allocator: Allocator, tag_name: []const u8, message: ?[]const u
     };
     defer if (message == null) allocator.free(tag_message);
 
-    try argv.append(allocator, tag_message);
+    try argv.append(tag_message);
 
     if (sign) {
-        try argv.append(allocator, "--sign");
+        try argv.append("--sign");
     }
 
     const result = try std.process.Child.run(.{
@@ -130,7 +123,7 @@ pub fn createTag(allocator: Allocator, tag_name: []const u8, message: ?[]const u
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (!termSuccess(result.term)) {
+    if (result.term.Exited != 0) {
         std.debug.print("Git tag failed: {s}\n", .{result.stderr});
         return GitError.CommandFailed;
     }
@@ -145,7 +138,7 @@ pub fn hasRemote(allocator: Allocator) !bool {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (!termSuccess(result.term)) {
+    if (result.term.Exited != 0) {
         return false;
     }
 
@@ -161,20 +154,20 @@ pub fn pull(allocator: Allocator) !void {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (!termSuccess(result.term)) {
+    if (result.term.Exited != 0) {
         // Pull might fail if there's nothing to pull, which is okay
         return;
     }
 }
 
 pub fn push(allocator: Allocator, follow_tags: bool) !void {
-    var argv: std.ArrayList([]const u8) = .empty;
-    defer argv.deinit(allocator);
+    var argv = std.ArrayList([]const u8).init(allocator);
+    defer argv.deinit();
 
-    try argv.appendSlice(allocator, &[_][]const u8{ "git", "push" });
+    try argv.appendSlice(&[_][]const u8{ "git", "push" });
 
     if (follow_tags) {
-        try argv.append(allocator, "--follow-tags");
+        try argv.append("--follow-tags");
     }
 
     const result = try std.process.Child.run(.{
@@ -185,7 +178,7 @@ pub fn push(allocator: Allocator, follow_tags: bool) !void {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (!termSuccess(result.term)) {
+    if (result.term.Exited != 0) {
         std.debug.print("Git push failed: {s}\n", .{result.stderr});
         return GitError.CommandFailed;
     }
@@ -202,28 +195,28 @@ pub fn getRecentCommits(allocator: Allocator, count: u32) ![][]u8 {
 
     defer allocator.free(result.stderr);
 
-    if (!termSuccess(result.term)) {
+    if (result.term.Exited != 0) {
         allocator.free(result.stdout);
         return GitError.CommandFailed;
     }
 
-    var commits: std.ArrayList([]u8) = .empty;
+    var commits = std.ArrayList([]u8).init(allocator);
     errdefer {
-        for (commits.items) |c| {
-            allocator.free(c);
+        for (commits.items) |commit| {
+            allocator.free(commit);
         }
-        commits.deinit(allocator);
+        commits.deinit();
     }
 
     var lines = std.mem.splitScalar(u8, result.stdout, '\n');
     while (lines.next()) |line| {
         if (line.len > 0) {
-            try commits.append(allocator, try allocator.dupe(u8, line));
+            try commits.append(try allocator.dupe(u8, line));
         }
     }
 
     allocator.free(result.stdout);
-    return try commits.toOwnedSlice(allocator);
+    return try commits.toOwnedSlice();
 }
 
 pub fn getCommitsSinceLastTag(allocator: Allocator) ![][]u8 {
@@ -240,7 +233,7 @@ pub fn getCommitsSinceLastTag(allocator: Allocator) ![][]u8 {
     commits_argv[2] = "--oneline";
     commits_argv[3] = "--no-merges";
 
-    const has_tag = termSuccess(result.term) and result.stdout.len > 0;
+    const has_tag = result.term.Exited == 0 and result.stdout.len > 0;
     const tag_range = if (has_tag) blk: {
         const tag = std.mem.trimRight(u8, result.stdout, "\n\r");
         break :blk try std.fmt.allocPrint(allocator, "{s}..HEAD", .{tag});
@@ -262,36 +255,36 @@ pub fn getCommitsSinceLastTag(allocator: Allocator) ![][]u8 {
 
     defer allocator.free(commits_result.stderr);
 
-    if (!termSuccess(commits_result.term)) {
+    if (commits_result.term.Exited != 0) {
         allocator.free(commits_result.stdout);
         return GitError.CommandFailed;
     }
 
-    var commits: std.ArrayList([]u8) = .empty;
+    var commits = std.ArrayList([]u8).init(allocator);
     errdefer {
-        for (commits.items) |c| {
-            allocator.free(c);
+        for (commits.items) |commit| {
+            allocator.free(commit);
         }
-        commits.deinit(allocator);
+        commits.deinit();
     }
 
     var lines = std.mem.splitScalar(u8, commits_result.stdout, '\n');
     while (lines.next()) |line| {
         if (line.len > 0) {
-            try commits.append(allocator, try allocator.dupe(u8, line));
+            try commits.append(try allocator.dupe(u8, line));
         }
     }
 
     allocator.free(commits_result.stdout);
-    return try commits.toOwnedSlice(allocator);
+    return try commits.toOwnedSlice();
 }
 
 pub fn generateChangelog(allocator: Allocator, version: []const u8) !void {
     // Get commits since last tag
     const commits = try getCommitsSinceLastTag(allocator);
     defer {
-        for (commits) |c| {
-            allocator.free(c);
+        for (commits) |commit| {
+            allocator.free(commit);
         }
         allocator.free(commits);
     }
@@ -324,90 +317,80 @@ pub fn generateChangelog(allocator: Allocator, version: []const u8) !void {
     const day: u8 = @min(31, @as(u8, @intCast(@mod(year_days, 30))) + 1);
 
     // Build new changelog entry
-    var new_entry: std.ArrayList(u8) = .empty;
-    defer new_entry.deinit(allocator);
+    var new_entry = std.ArrayList(u8).init(allocator);
+    defer new_entry.deinit();
 
-    const header = try std.fmt.allocPrint(allocator, "## [{s}] - {d}-{d:0>2}-{d:0>2}\n\n", .{ version, year, month, day });
-    defer allocator.free(header);
-    try new_entry.appendSlice(allocator, header);
+    try new_entry.writer().print("## [{s}] - {d}-{d:0>2}-{d:0>2}\n\n", .{ version, year, month, day });
 
     // Categorize commits
-    var features: std.ArrayList([]const u8) = .empty;
-    defer features.deinit(allocator);
-    var fixes: std.ArrayList([]const u8) = .empty;
-    defer fixes.deinit(allocator);
-    var chores: std.ArrayList([]const u8) = .empty;
-    defer chores.deinit(allocator);
-    var other_changes: std.ArrayList([]const u8) = .empty;
-    defer other_changes.deinit(allocator);
+    var features = std.ArrayList([]const u8).init(allocator);
+    defer features.deinit();
+    var fixes = std.ArrayList([]const u8).init(allocator);
+    defer fixes.deinit();
+    var chores = std.ArrayList([]const u8).init(allocator);
+    defer chores.deinit();
+    var other = std.ArrayList([]const u8).init(allocator);
+    defer other.deinit();
 
-    for (commits) |c| {
+    for (commits) |commit| {
         // Skip the hash part and get the message
-        const space_idx = std.mem.indexOfScalar(u8, c, ' ') orelse continue;
-        const message = c[space_idx + 1 ..];
+        const space_idx = std.mem.indexOfScalar(u8, commit, ' ') orelse continue;
+        const message = commit[space_idx + 1 ..];
 
         if (std.mem.startsWith(u8, message, "feat:") or std.mem.startsWith(u8, message, "feat(")) {
-            try features.append(allocator, message);
+            try features.append(message);
         } else if (std.mem.startsWith(u8, message, "fix:") or std.mem.startsWith(u8, message, "fix(")) {
-            try fixes.append(allocator, message);
+            try fixes.append(message);
         } else if (std.mem.startsWith(u8, message, "chore:") or std.mem.startsWith(u8, message, "chore(")) {
-            try chores.append(allocator, message);
+            try chores.append(message);
         } else {
-            try other_changes.append(allocator, message);
+            try other.append(message);
         }
     }
 
     if (features.items.len > 0) {
-        try new_entry.appendSlice(allocator, "### Features\n\n");
+        try new_entry.writer().writeAll("### Features\n\n");
         for (features.items) |feat| {
-            const line = try std.fmt.allocPrint(allocator, "- {s}\n", .{feat});
-            defer allocator.free(line);
-            try new_entry.appendSlice(allocator, line);
+            try new_entry.writer().print("- {s}\n", .{feat});
         }
-        try new_entry.appendSlice(allocator, "\n");
+        try new_entry.writer().writeAll("\n");
     }
 
     if (fixes.items.len > 0) {
-        try new_entry.appendSlice(allocator, "### Bug Fixes\n\n");
+        try new_entry.writer().writeAll("### Bug Fixes\n\n");
         for (fixes.items) |fix| {
-            const line = try std.fmt.allocPrint(allocator, "- {s}\n", .{fix});
-            defer allocator.free(line);
-            try new_entry.appendSlice(allocator, line);
+            try new_entry.writer().print("- {s}\n", .{fix});
         }
-        try new_entry.appendSlice(allocator, "\n");
+        try new_entry.writer().writeAll("\n");
     }
 
     if (chores.items.len > 0) {
-        try new_entry.appendSlice(allocator, "### Chores\n\n");
+        try new_entry.writer().writeAll("### Chores\n\n");
         for (chores.items) |chore| {
-            const line = try std.fmt.allocPrint(allocator, "- {s}\n", .{chore});
-            defer allocator.free(line);
-            try new_entry.appendSlice(allocator, line);
+            try new_entry.writer().print("- {s}\n", .{chore});
         }
-        try new_entry.appendSlice(allocator, "\n");
+        try new_entry.writer().writeAll("\n");
     }
 
-    if (other_changes.items.len > 0) {
-        try new_entry.appendSlice(allocator, "### Other Changes\n\n");
-        for (other_changes.items) |change| {
-            const line = try std.fmt.allocPrint(allocator, "- {s}\n", .{change});
-            defer allocator.free(line);
-            try new_entry.appendSlice(allocator, line);
+    if (other.items.len > 0) {
+        try new_entry.writer().writeAll("### Other Changes\n\n");
+        for (other.items) |change| {
+            try new_entry.writer().print("- {s}\n", .{change});
         }
-        try new_entry.appendSlice(allocator, "\n");
+        try new_entry.writer().writeAll("\n");
     }
 
     // Insert new entry after the header
     const header_end = std.mem.indexOf(u8, existing_content, "\n\n") orelse existing_content.len;
     const insert_pos = header_end + 2;
 
-    var final_content: std.ArrayList(u8) = .empty;
-    defer final_content.deinit(allocator);
+    var final_content = std.ArrayList(u8).init(allocator);
+    defer final_content.deinit();
 
-    try final_content.appendSlice(allocator, existing_content[0..insert_pos]);
-    try final_content.appendSlice(allocator, new_entry.items);
+    try final_content.appendSlice(existing_content[0..insert_pos]);
+    try final_content.appendSlice(new_entry.items);
     if (insert_pos < existing_content.len) {
-        try final_content.appendSlice(allocator, existing_content[insert_pos..]);
+        try final_content.appendSlice(existing_content[insert_pos..]);
     }
 
     // Write the updated changelog

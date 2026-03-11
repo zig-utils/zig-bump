@@ -38,7 +38,7 @@ pub const FileType = enum {
 
     pub fn isTomlFile(self: FileType) bool {
         return self == .cargo_toml or self == .pyproject_toml or
-            self == .ion_toml or self == .generic_toml;
+               self == .ion_toml or self == .generic_toml;
     }
 };
 
@@ -130,17 +130,17 @@ fn updateVersionInJson(allocator: Allocator, content: []const u8, old_version: [
     try obj.put("version", .{ .string = version_str });
 
     // Serialize back to JSON with pretty printing
-    var output: std.ArrayList(u8) = .empty;
-    defer output.deinit(allocator);
+    var output = std.ArrayList(u8).init(allocator);
+    defer output.deinit();
 
     try std.json.stringify(root, .{
         .whitespace = .indent_2,
-    }, output.writer(allocator));
+    }, output.writer());
 
     // Add newline at end
-    try output.append(allocator, '\n');
+    try output.append('\n');
 
-    return try output.toOwnedSlice(allocator);
+    return try output.toOwnedSlice();
 }
 
 fn findVersionInToml(allocator: Allocator, content: []const u8) !?[]u8 {
@@ -174,8 +174,8 @@ fn findVersionInToml(allocator: Allocator, content: []const u8) !?[]u8 {
 fn updateVersionInToml(allocator: Allocator, content: []const u8, old_version: []const u8, new_version: []const u8) ![]u8 {
     _ = old_version;
 
-    var output: std.ArrayList(u8) = .empty;
-    defer output.deinit(allocator);
+    var output = std.ArrayList(u8).init(allocator);
+    defer output.deinit();
 
     var lines = std.mem.splitScalar(u8, content, '\n');
     var line_index: usize = 0;
@@ -186,8 +186,8 @@ fn updateVersionInToml(allocator: Allocator, content: []const u8, old_version: [
         if (std.mem.startsWith(u8, trimmed, "version")) {
             // Check if this is a version field assignment
             const eq_index = std.mem.indexOfScalar(u8, trimmed, '=') orelse {
-                try output.appendSlice(allocator, line);
-                if (lines.rest().len > 0) try output.append(allocator, '\n');
+                try output.appendSlice(line);
+                if (lines.rest().len > 0) try output.append('\n');
                 continue;
             };
 
@@ -195,29 +195,27 @@ fn updateVersionInToml(allocator: Allocator, content: []const u8, old_version: [
             if (value_part.len >= 2 and (value_part[0] == '"' or value_part[0] == '\'')) {
                 // This is a version field, replace it
                 const leading_space = std.mem.indexOfScalar(u8, line, 'v') orelse 0;
-                try output.appendSlice(allocator, line[0..leading_space]);
-                const replacement = try std.fmt.allocPrint(allocator, "version = \"{s}\"", .{new_version});
-                defer allocator.free(replacement);
-                try output.appendSlice(allocator, replacement);
+                try output.appendSlice(line[0..leading_space]);
+                try output.writer().print("version = \"{s}\"", .{new_version});
             } else {
-                try output.appendSlice(allocator, line);
+                try output.appendSlice(line);
             }
         } else {
-            try output.appendSlice(allocator, line);
+            try output.appendSlice(line);
         }
 
-        if (lines.rest().len > 0) try output.append(allocator, '\n');
+        if (lines.rest().len > 0) try output.append('\n');
     }
 
-    return try output.toOwnedSlice(allocator);
+    return try output.toOwnedSlice();
 }
 
 fn findVersionInText(allocator: Allocator, content: []const u8) !?[]u8 {
     // Look for semantic version patterns in text
     // Pattern: \bX.Y.Z\b (word boundaries)
     const semver_pattern = std.mem.indexOf(u8, content, "0.") orelse
-        std.mem.indexOf(u8, content, "1.") orelse
-        return null;
+                           std.mem.indexOf(u8, content, "1.") orelse
+                           return null;
 
     // Extract the version starting from this position
     var end = semver_pattern;
@@ -240,8 +238,8 @@ fn findVersionInText(allocator: Allocator, content: []const u8) !?[]u8 {
 
 fn updateVersionInText(allocator: Allocator, content: []const u8, old_version: []const u8, new_version: []const u8) ![]u8 {
     // Simple find and replace with word boundary consideration
-    var output: std.ArrayList(u8) = .empty;
-    defer output.deinit(allocator);
+    var output = std.ArrayList(u8).init(allocator);
+    defer output.deinit();
 
     var pos: usize = 0;
     while (pos < content.len) {
@@ -258,20 +256,20 @@ fn updateVersionInText(allocator: Allocator, content: []const u8, old_version: [
 
             // Only replace if we have word boundaries on both sides
             if (has_boundary_before and has_boundary_after) {
-                try output.appendSlice(allocator, content[pos..abs_index]);
-                try output.appendSlice(allocator, new_version);
+                try output.appendSlice(content[pos..abs_index]);
+                try output.appendSlice(new_version);
                 pos = end_index;
             } else {
-                try output.appendSlice(allocator, content[pos .. abs_index + 1]);
+                try output.appendSlice(content[pos .. abs_index + 1]);
                 pos = abs_index + 1;
             }
         } else {
-            try output.appendSlice(allocator, remaining);
+            try output.appendSlice(remaining);
             break;
         }
     }
 
-    return try output.toOwnedSlice(allocator);
+    return try output.toOwnedSlice();
 }
 
 fn isVersionChar(c: u8) bool {
@@ -281,12 +279,12 @@ fn isVersionChar(c: u8) bool {
 pub fn findFiles(allocator: Allocator, dir_path: []const u8, recursive: bool, pattern: ?[]const u8) ![][]u8 {
     _ = pattern;
 
-    var files: std.ArrayList([]u8) = .empty;
+    var files = std.ArrayList([]u8).init(allocator);
     errdefer {
         for (files.items) |file| {
             allocator.free(file);
         }
-        files.deinit(allocator);
+        files.deinit();
     }
 
     if (recursive) {
@@ -297,13 +295,13 @@ pub fn findFiles(allocator: Allocator, dir_path: []const u8, recursive: bool, pa
         defer allocator.free(package_json_path);
 
         std.fs.cwd().access(package_json_path, .{}) catch {
-            return files.toOwnedSlice(allocator);
+            return files.toOwnedSlice();
         };
 
-        try files.append(allocator, try allocator.dupe(u8, package_json_path));
+        try files.append(try allocator.dupe(u8, package_json_path));
     }
 
-    return try files.toOwnedSlice(allocator);
+    return try files.toOwnedSlice();
 }
 
 fn findFilesRecursive(allocator: Allocator, files: *std.ArrayList([]u8), dir_path: []const u8) !void {
@@ -334,7 +332,7 @@ fn findFilesRecursive(allocator: Allocator, files: *std.ArrayList([]u8), dir_pat
             .file => {
                 const file_type = FileType.fromPath(entry.name);
                 if (file_type == .package_json or file_type.isTomlFile()) {
-                    try files.append(allocator, try allocator.dupe(u8, full_path));
+                    try files.append(try allocator.dupe(u8, full_path));
                 }
             },
             else => {},

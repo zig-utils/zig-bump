@@ -15,14 +15,14 @@ const Config = struct {
 
 fn exitedSuccessfully(term: std.process.Child.Term) bool {
     return switch (term) {
-        .exited => |code| code == 0,
+        .Exited => |code| code == 0,
         else => false,
     };
 }
 
 fn exitCode(term: std.process.Child.Term) u8 {
     return switch (term) {
-        .exited => |code| code,
+        .Exited => |code| code,
         else => 1,
     };
 }
@@ -258,7 +258,7 @@ fn getCommitsSinceLastTag(allocator: std.mem.Allocator) ![][]u8 {
 
     const has_tag = exitedSuccessfully(result.term) and result.stdout.len > 0;
     const tag_range = if (has_tag) blk: {
-        const tag = std.mem.trimEnd(u8, result.stdout, "\n\r");
+        const tag = std.mem.trimRight(u8, result.stdout, "\n\r");
         break :blk try std.fmt.allocPrint(allocator, "{s}..HEAD", .{tag});
     } else null;
 
@@ -325,8 +325,7 @@ fn generateChangelog(allocator: std.mem.Allocator, version: []const u8) !void {
     };
     defer allocator.free(existing_content);
 
-    const ts = std.posix.clock_gettime(std.posix.CLOCK.REALTIME) catch unreachable;
-    const epoch_seconds = ts.sec;
+    const epoch_seconds = std.time.timestamp();
     const days_since_epoch = @divFloor(epoch_seconds, 86400);
     const days_since_1970 = days_since_epoch;
 
@@ -521,11 +520,11 @@ fn promptForVersion(allocator: std.mem.Allocator, current_version: []const u8) !
     std.debug.print("\n", .{});
     std.debug.print("Enter selection (1-3): ", .{});
 
-    const stdin = std.io.getStdIn().reader();
+    const stdin = std.fs.File.stdin();
     var buf: [100]u8 = undefined;
-    const input = try stdin.readUntilDelimiterOrEof(&buf, '\n');
-
-    const line = input orelse return error.InvalidSelection;
+    const n = stdin.read(&buf) catch return error.InvalidSelection;
+    if (n == 0) return error.InvalidSelection;
+    const line = buf[0..n];
     const trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
 
     if (std.mem.eql(u8, trimmed, "1")) {

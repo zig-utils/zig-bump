@@ -158,11 +158,11 @@ pub const SemVer = struct {
                 } else {
                     // Increment existing prerelease
                     var pre_parts = std.mem.splitScalar(u8, self.prerelease, '.');
-                    var parts = std.ArrayList([]const u8).init(self.allocator);
-                    defer parts.deinit();
+                    var parts: std.ArrayList([]const u8) = .empty;
+                    defer parts.deinit(self.allocator);
 
                     while (pre_parts.next()) |part| {
-                        try parts.append(part);
+                        try parts.append(self.allocator, part);
                     }
 
                     if (parts.items.len > 0) {
@@ -173,19 +173,19 @@ pub const SemVer = struct {
                             if (parts.items.len == 1) {
                                 self.prerelease = try std.fmt.allocPrint(self.allocator, "{d}", .{num + 1});
                             } else {
-                                var new_parts = std.ArrayList(u8).init(self.allocator);
-                                defer new_parts.deinit();
+                                var new_parts: std.ArrayList(u8) = .empty;
+                                defer new_parts.deinit(self.allocator);
 
                                 for (parts.items[0 .. parts.items.len - 1], 0..) |part, i| {
-                                    if (i > 0) try new_parts.append('.');
-                                    try new_parts.appendSlice(part);
+                                    if (i > 0) try new_parts.append(self.allocator, '.');
+                                    try new_parts.appendSlice(self.allocator, part);
                                 }
-                                try new_parts.append('.');
+                                try new_parts.append(self.allocator, '.');
                                 const incremented = try std.fmt.allocPrint(self.allocator, "{d}", .{num + 1});
                                 defer self.allocator.free(incremented);
-                                try new_parts.appendSlice(incremented);
+                                try new_parts.appendSlice(self.allocator, incremented);
 
-                                self.prerelease = try new_parts.toOwnedSlice();
+                                self.prerelease = try new_parts.toOwnedSlice(self.allocator);
                             }
                             self.allocator.free(old_prerelease);
                         } else {

@@ -19,11 +19,11 @@ pub fn parseArgs(allocator: Allocator) !CliArgs {
     defer args.deinit();
 
     var result = CliArgs{};
-    var files = std.ArrayList([]const u8).init(allocator);
-    defer files.deinit();
+    var files: std.ArrayList([]const u8) = .empty;
+    defer files.deinit(allocator);
 
-    var execute_cmds = std.ArrayList([]const u8).init(allocator);
-    defer execute_cmds.deinit();
+    var execute_cmds: std.ArrayList([]const u8) = .empty;
+    defer execute_cmds.deinit(allocator);
 
     // Skip program name
     _ = args.skip();
@@ -175,7 +175,7 @@ pub fn parseArgs(allocator: Allocator) !CliArgs {
 
         if (std.mem.eql(u8, arg, "--execute") or std.mem.eql(u8, arg, "-x")) {
             const value = args.next() orelse return error.MissingValue;
-            try execute_cmds.append(try allocator.dupe(u8, value));
+            try execute_cmds.append(allocator, try allocator.dupe(u8, value));
             continue;
         }
 
@@ -184,7 +184,7 @@ pub fn parseArgs(allocator: Allocator) !CliArgs {
             var file_iter = std.mem.splitScalar(u8, value, ',');
             while (file_iter.next()) |file| {
                 const trimmed = std.mem.trim(u8, file, &std.ascii.whitespace);
-                try files.append(try allocator.dupe(u8, trimmed));
+                try files.append(allocator, try allocator.dupe(u8, trimmed));
             }
             continue;
         }
@@ -195,19 +195,19 @@ pub fn parseArgs(allocator: Allocator) !CliArgs {
                 result.release = try allocator.dupe(u8, arg);
             } else {
                 // Additional positional arguments are files
-                try files.append(try allocator.dupe(u8, arg));
+                try files.append(allocator, try allocator.dupe(u8, arg));
             }
         }
     }
 
     // Set execute commands if any
     if (execute_cmds.items.len > 0) {
-        result.config.execute = try execute_cmds.toOwnedSlice();
+        result.config.execute = try execute_cmds.toOwnedSlice(allocator);
     }
 
     // Set files if any
     if (files.items.len > 0) {
-        result.config.files = try files.toOwnedSlice();
+        result.config.files = try files.toOwnedSlice(allocator);
     }
 
     return result;

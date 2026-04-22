@@ -279,7 +279,7 @@ fn getCommitsSinceLastTag(allocator: std.mem.Allocator, io: std.Io) ![][]u8 {
         return error.GitCommandFailed;
     }
 
-    var commits = std.ArrayList([]u8){};
+    var commits: std.ArrayList([]u8) = .empty;
     errdefer {
         for (commits.items) |commit| {
             allocator.free(commit);
@@ -411,7 +411,7 @@ fn gitAdd(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8) !void
 }
 
 fn gitCommit(allocator: std.mem.Allocator, io: std.Io, message: []const u8, sign: bool, no_verify: bool) !void {
-    var argv_list = std.ArrayList([]const u8){};
+    var argv_list = std.ArrayList([]const u8).empty;
     defer argv_list.deinit(allocator);
 
     try argv_list.append(allocator, "git");
@@ -436,7 +436,7 @@ fn gitCommit(allocator: std.mem.Allocator, io: std.Io, message: []const u8, sign
 }
 
 fn gitTag(allocator: std.mem.Allocator, io: std.Io, tag_name: []const u8, message: []const u8, sign: bool) !void {
-    var argv_list = std.ArrayList([]const u8){};
+    var argv_list = std.ArrayList([]const u8).empty;
     defer argv_list.deinit(allocator);
 
     try argv_list.append(allocator, "git");
@@ -462,7 +462,7 @@ fn gitTag(allocator: std.mem.Allocator, io: std.Io, tag_name: []const u8, messag
 }
 
 fn gitPush(allocator: std.mem.Allocator, io: std.Io, follow_tags: bool) !void {
-    var argv_list = std.ArrayList([]const u8){};
+    var argv_list = std.ArrayList([]const u8).empty;
     defer argv_list.deinit(allocator);
 
     try argv_list.append(allocator, "git");

@@ -68,6 +68,7 @@ bump major
 ### Git Integration (like bumpx!)
 
 By default, `bump` will:
+
 1. Update your `build.zig.zon` version
 2. Create a git commit
 3. Create a git tag (e.g., `v1.0.1`)
@@ -120,6 +121,7 @@ $ cat build.zig.zon
 ## How It Works
 
 zig-bump:
+
 1. Reads your `build.zig.zon` file
 2. Finds the `.version = "X.Y.Z"` line
 3. Increments the appropriate version number
@@ -211,6 +213,7 @@ Build Summary: 3/3 steps succeeded; 8/8 tests passed
 ```
 
 Tests cover:
+
 - ✅ Major version bumping
 - ✅ Minor version bumping
 - ✅ Patch version bumping
@@ -233,21 +236,26 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+
       - uses: actions/checkout@v4
 
       - name: Setup Zig
+
         uses: goto-bus-stop/setup-zig@v2
 
       - name: Install zig-bump
+
         run: |
           git clone https://github.com/stacksjs/zig-bump.git
           cd zig-bump && zig build -Doptimize=ReleaseFast
           sudo cp zig-out/bin/bump /usr/local/bin/
 
       - name: Bump version
+
         run: bump patch --no-push
 
       - name: Push changes
+
         run: git push --follow-tags
 ```
 
@@ -255,7 +263,7 @@ jobs:
 
 ```bash
 # .git/hooks/pre-push
-#!/bin/bash
+# !/bin/bash
 echo "Bumping patch version..."
 bump patch --no-push
 ```

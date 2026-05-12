@@ -27,3 +27,4 @@ zig-cache/
 # Test artifacts
 test_package.json
 *.test
+pantry

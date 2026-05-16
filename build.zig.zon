@@ -1,6 +1,6 @@
 .{
     .name = .zig_bump,
-    .version = "0.1.5",
+    .version = "0.1.3",
     .fingerprint = 0xaa6dcd1acebd2720,
     .minimum_zig_version = "0.17.0-dev.56+a8226cd53",
     .paths = .{

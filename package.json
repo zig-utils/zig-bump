@@ -1,9 +1,9 @@
 {
   "name": "zig-bump",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "scripts": {
-    "release": "pantry release patch --yes",
-    "release:minor": "pantry release minor --yes",
-    "release:major": "pantry release major --yes"
+    "release": "zig build -Doptimize=ReleaseFast --global-cache-dir .zig-cache/global && ./zig-out/bin/bump patch --yes",
+    "release:minor": "zig build -Doptimize=ReleaseFast --global-cache-dir .zig-cache/global && ./zig-out/bin/bump minor --yes",
+    "release:major": "zig build -Doptimize=ReleaseFast --global-cache-dir .zig-cache/global && ./zig-out/bin/bump major --yes"
   }
 }

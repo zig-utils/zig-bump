@@ -291,10 +291,6 @@ pub fn printHelp() void {
     std.debug.print("{s}", .{help_text});
 }
 
-pub fn printVersion() void {
-    std.debug.print("zig-bump v0.1.0\n", .{});
-}
-
 test "parse basic args" {
     // This is a placeholder test
     // Actual testing would require mocking process args

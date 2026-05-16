@@ -43,6 +43,9 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try printHelp();
             return;
+        } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
+            std.debug.print("zig-bump v{s}\n", .{@import("build_options").version});
+            return;
         } else if (std.mem.eql(u8, arg, "--all") or std.mem.eql(u8, arg, "-a")) {
             config.commit = true;
             config.tag = true;

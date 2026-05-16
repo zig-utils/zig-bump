@@ -35,7 +35,8 @@ pub fn main(init: std.process.Init) !void {
     var release_type: ?[]const u8 = null;
 
     // Parse command line args via std.process.Init
-    var args = init.minimal.args.iterate();
+    var args = try init.minimal.args.iterateAllocator(allocator);
+    defer args.deinit();
     _ = args.skip(); // Skip program name
 
     while (args.next()) |arg| {

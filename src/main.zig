@@ -173,6 +173,9 @@ pub fn main(init: std.process.Init) !void {
             }
 
             try gitAdd(allocator, io, "build.zig.zon");
+            if (config.changelog) {
+                try gitAdd(allocator, io, "CHANGELOG.md");
+            }
 
             if (config.commit) {
                 const commit_msg = try formatCommitMessage(allocator, new_version);

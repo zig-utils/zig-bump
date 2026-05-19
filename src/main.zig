@@ -611,6 +611,10 @@ fn drawMenu(current_version: []const u8, nexts: []const []const u8, selected: us
 }
 
 fn pickWithArrows(current_version: []const u8, nexts: []const []const u8) !usize {
+    if (builtin.os.tag == .windows) return error.NotSupported;
+
+    // Only analyzed on non-Windows targets; the early-return above is comptime-known
+    // there, so the body below is skipped during semantic analysis on Windows.
     const fd = std.posix.STDIN_FILENO;
     const original = try std.posix.tcgetattr(fd);
     var raw = original;

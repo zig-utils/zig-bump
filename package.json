@@ -1,6 +1,6 @@
 {
   "name": "zig-bump",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "scripts": {
     "release": "zig build -Doptimize=ReleaseFast --global-cache-dir .zig-cache/global && ./zig-out/bin/bump prompt",
     "release:patch": "zig build -Doptimize=ReleaseFast --global-cache-dir .zig-cache/global && ./zig-out/bin/bump patch --yes",

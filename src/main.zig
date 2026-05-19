@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const Config = struct {
     commit: bool = true,
@@ -84,6 +85,10 @@ pub fn main(init: std.process.Init) !void {
                 return error.MissingValue;
             };
         } else if (!std.mem.startsWith(u8, arg, "-")) {
+            if (std.mem.eql(u8, arg, "prompt")) {
+                // explicit interactive trigger; leave release_type null so the picker opens
+                continue;
+            }
             release_type = arg;
         } else {
             std.debug.print("Unknown option: {s}\n", .{arg});
@@ -220,30 +225,88 @@ fn findVersion(allocator: std.mem.Allocator, content: []const u8) !?[]u8 {
     return try allocator.dupe(u8, content[version_start..end_idx]);
 }
 
-fn bumpVersion(allocator: std.mem.Allocator, version: []const u8, release_type: []const u8) ![]u8 {
-    var parts: [3]u32 = undefined;
-    var iter = std.mem.splitScalar(u8, version, '.');
+const ParsedVersion = struct {
+    major: u32,
+    minor: u32,
+    patch: u32,
+    pre: []const u8,
+};
+
+fn parseVersion(version: []const u8) !ParsedVersion {
+    var rest = version;
+    if (std.mem.startsWith(u8, rest, "v")) rest = rest[1..];
+
+    var pre: []const u8 = "";
+    if (std.mem.indexOfScalar(u8, rest, '-')) |i| {
+        pre = rest[i + 1 ..];
+        rest = rest[0..i];
+    }
+    if (std.mem.indexOfScalar(u8, rest, '+')) |i| rest = rest[0..i];
+
+    var parts: [3]u32 = .{ 0, 0, 0 };
+    var iter = std.mem.splitScalar(u8, rest, '.');
     var i: usize = 0;
     while (iter.next()) |part| : (i += 1) {
         if (i >= 3) return error.InvalidVersion;
-        parts[i] = try std.fmt.parseInt(u32, part, 10);
+        parts[i] = std.fmt.parseInt(u32, part, 10) catch return error.InvalidVersion;
     }
     if (i != 3) return error.InvalidVersion;
 
-    if (std.mem.eql(u8, release_type, "major")) {
-        parts[0] += 1;
-        parts[1] = 0;
-        parts[2] = 0;
-    } else if (std.mem.eql(u8, release_type, "minor")) {
-        parts[1] += 1;
-        parts[2] = 0;
-    } else if (std.mem.eql(u8, release_type, "patch")) {
-        parts[2] += 1;
-    } else {
-        return error.InvalidReleaseType;
+    return .{ .major = parts[0], .minor = parts[1], .patch = parts[2], .pre = pre };
+}
+
+fn bumpPrerelease(allocator: std.mem.Allocator, major: u32, minor: u32, patch: u32, pre: []const u8) ![]u8 {
+    const preid_default = "alpha";
+
+    if (pre.len == 0) {
+        return try std.fmt.allocPrint(allocator, "{d}.{d}.{d}-{s}.0", .{ major, minor, patch + 1, preid_default });
     }
 
-    return try std.fmt.allocPrint(allocator, "{d}.{d}.{d}", .{ parts[0], parts[1], parts[2] });
+    // Find last numeric segment in `pre` and increment it; otherwise append ".0".
+    var last_dot: ?usize = null;
+    var idx: usize = pre.len;
+    while (idx > 0) {
+        idx -= 1;
+        if (pre[idx] == '.') {
+            last_dot = idx;
+            break;
+        }
+    }
+    const tail_start: usize = if (last_dot) |d| d + 1 else 0;
+    const tail = pre[tail_start..];
+    if (std.fmt.parseInt(u32, tail, 10)) |num| {
+        const head = pre[0..tail_start];
+        return try std.fmt.allocPrint(allocator, "{d}.{d}.{d}-{s}{d}", .{ major, minor, patch, head, num + 1 });
+    } else |_| {
+        return try std.fmt.allocPrint(allocator, "{d}.{d}.{d}-{s}.0", .{ major, minor, patch, pre });
+    }
+}
+
+fn bumpVersion(allocator: std.mem.Allocator, version: []const u8, release_type: []const u8) ![]u8 {
+    const v = try parseVersion(version);
+    const preid_default = "alpha";
+
+    if (std.mem.eql(u8, release_type, "major")) {
+        return try std.fmt.allocPrint(allocator, "{d}.{d}.{d}", .{ v.major + 1, 0, 0 });
+    } else if (std.mem.eql(u8, release_type, "minor")) {
+        return try std.fmt.allocPrint(allocator, "{d}.{d}.{d}", .{ v.major, v.minor + 1, 0 });
+    } else if (std.mem.eql(u8, release_type, "patch")) {
+        return try std.fmt.allocPrint(allocator, "{d}.{d}.{d}", .{ v.major, v.minor, v.patch + 1 });
+    } else if (std.mem.eql(u8, release_type, "premajor")) {
+        return try std.fmt.allocPrint(allocator, "{d}.{d}.{d}-{s}.0", .{ v.major + 1, 0, 0, preid_default });
+    } else if (std.mem.eql(u8, release_type, "preminor")) {
+        return try std.fmt.allocPrint(allocator, "{d}.{d}.{d}-{s}.0", .{ v.major, v.minor + 1, 0, preid_default });
+    } else if (std.mem.eql(u8, release_type, "prepatch")) {
+        return try std.fmt.allocPrint(allocator, "{d}.{d}.{d}-{s}.0", .{ v.major, v.minor, v.patch + 1, preid_default });
+    } else if (std.mem.eql(u8, release_type, "prerelease")) {
+        return try bumpPrerelease(allocator, v.major, v.minor, v.patch, v.pre);
+    }
+
+    // Not a named release type — treat as a literal version string.
+    _ = parseVersion(release_type) catch return error.InvalidReleaseType;
+    var literal = release_type;
+    if (std.mem.startsWith(u8, literal, "v")) literal = literal[1..];
+    return try allocator.dupe(u8, literal);
 }
 
 // Changelog generation functions
@@ -498,43 +561,196 @@ fn formatCommitMessage(allocator: std.mem.Allocator, version: []const u8) ![]u8 
     , .{version});
 }
 
-fn promptForVersion(allocator: std.mem.Allocator, io: std.Io, current_version: []const u8) ![]const u8 {
-    const major_next = try bumpVersion(allocator, current_version, "major");
-    defer allocator.free(major_next);
+const PickerVariant = struct {
+    label: []const u8,
+    release_type: []const u8,
+};
 
-    const minor_next = try bumpVersion(allocator, current_version, "minor");
-    defer allocator.free(minor_next);
+const PICKER_VARIANTS = [_]PickerVariant{
+    .{ .label = "patch", .release_type = "patch" },
+    .{ .label = "minor", .release_type = "minor" },
+    .{ .label = "major", .release_type = "major" },
+    .{ .label = "prepatch", .release_type = "prepatch" },
+    .{ .label = "preminor", .release_type = "preminor" },
+    .{ .label = "premajor", .release_type = "premajor" },
+    .{ .label = "prerelease", .release_type = "prerelease" },
+    .{ .label = "custom...", .release_type = "custom" },
+};
 
-    const patch_next = try bumpVersion(allocator, current_version, "patch");
-    defer allocator.free(patch_next);
+fn canUseInteractivePicker() bool {
+    if (builtin.os.tag == .windows) return false;
+    return std.c.isatty(std.posix.STDIN_FILENO) != 0 and std.c.isatty(std.posix.STDERR_FILENO) != 0;
+}
 
+fn drawMenu(current_version: []const u8, nexts: []const []const u8, selected: usize, first_draw: bool) void {
+    // Lines we render every frame: 1 blank + 1 current + 1 blank + 1 prompt + N options.
+    const total_lines: usize = 4 + PICKER_VARIANTS.len;
+
+    if (!first_draw) {
+        // Move cursor to the top of the previous frame, then clear from cursor downward.
+        std.debug.print("\x1b[{d}A\x1b[J", .{total_lines});
+    }
+
+    std.debug.print("\n", .{});
+    std.debug.print("Current version: \x1b[36m{s}\x1b[0m\n", .{current_version});
+    std.debug.print("\n", .{});
+    std.debug.print("? \x1b[1mChoose an option\x1b[0m \x1b[90m(↑/↓ or j/k, Enter to confirm, Esc/q to cancel)\x1b[0m\n", .{});
+
+    for (PICKER_VARIANTS, nexts, 0..) |v, next, i| {
+        if (i == selected) {
+            std.debug.print("  \x1b[36m❯\x1b[0m \x1b[1m{s:<11}\x1b[0m \x1b[32m{s}\x1b[0m\n", .{ v.label, next });
+        } else {
+            std.debug.print("    \x1b[90m{s:<11}\x1b[0m \x1b[90m{s}\x1b[0m\n", .{ v.label, next });
+        }
+    }
+}
+
+fn pickWithArrows(current_version: []const u8, nexts: []const []const u8) !usize {
+    const fd = std.posix.STDIN_FILENO;
+    const original = try std.posix.tcgetattr(fd);
+    var raw = original;
+    raw.lflag.ECHO = false;
+    raw.lflag.ICANON = false;
+    raw.lflag.ISIG = false;
+    raw.iflag.ICRNL = false;
+    raw.iflag.IXON = false;
+    raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
+    raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
+    try std.posix.tcsetattr(fd, .NOW, raw);
+    defer std.posix.tcsetattr(fd, .NOW, original) catch {};
+
+    std.debug.print("\x1b[?25l", .{}); // hide cursor
+    defer std.debug.print("\x1b[?25h", .{}); // show cursor
+
+    var selected: usize = 0;
+    var first = true;
+
+    while (true) {
+        drawMenu(current_version, nexts, selected, first);
+        first = false;
+
+        var buf: [8]u8 = undefined;
+        const n = std.posix.read(fd, &buf) catch return error.ReadFailed;
+        if (n == 0) continue;
+
+        const c0 = buf[0];
+        switch (c0) {
+            '\r', '\n' => break,
+            3 => { // Ctrl-C
+                std.debug.print("\n", .{});
+                return error.Cancelled;
+            },
+            'q' => {
+                std.debug.print("\n", .{});
+                return error.Cancelled;
+            },
+            'k' => if (selected > 0) {
+                selected -= 1;
+            },
+            'j' => if (selected < PICKER_VARIANTS.len - 1) {
+                selected += 1;
+            },
+            27 => { // ESC or arrow-key prefix
+                if (n >= 3 and buf[1] == '[') {
+                    switch (buf[2]) {
+                        'A' => if (selected > 0) {
+                            selected -= 1;
+                        },
+                        'B' => if (selected < PICKER_VARIANTS.len - 1) {
+                            selected += 1;
+                        },
+                        else => {},
+                    }
+                } else {
+                    // Lone ESC — treat as cancel.
+                    std.debug.print("\n", .{});
+                    return error.Cancelled;
+                }
+            },
+            '1'...'9' => {
+                const idx: usize = @intCast(c0 - '1');
+                if (idx < PICKER_VARIANTS.len) {
+                    selected = idx;
+                    drawMenu(current_version, nexts, selected, false);
+                    break;
+                }
+            },
+            else => {},
+        }
+    }
+
+    return selected;
+}
+
+fn pickNumbered(io: std.Io, current_version: []const u8, nexts: []const []const u8) !usize {
     std.debug.print("\n", .{});
     std.debug.print("Current version: \x1b[36m{s}\x1b[0m\n\n", .{current_version});
     std.debug.print("Select version bump:\n\n", .{});
-    std.debug.print("  \x1b[33m1)\x1b[0m patch  \x1b[90m{s}\x1b[0m → \x1b[32m{s}\x1b[0m\n", .{ current_version, patch_next });
-    std.debug.print("  \x1b[33m2)\x1b[0m minor  \x1b[90m{s}\x1b[0m → \x1b[32m{s}\x1b[0m\n", .{ current_version, minor_next });
-    std.debug.print("  \x1b[33m3)\x1b[0m major  \x1b[90m{s}\x1b[0m → \x1b[32m{s}\x1b[0m\n", .{ current_version, major_next });
-    std.debug.print("\n", .{});
-    std.debug.print("Enter selection (1-3): ", .{});
+    for (PICKER_VARIANTS, nexts, 0..) |v, next, i| {
+        std.debug.print("  \x1b[33m{d})\x1b[0m {s:<11} \x1b[90m{s}\x1b[0m\n", .{ i + 1, v.label, next });
+    }
+    std.debug.print("\nEnter selection (1-{d}): ", .{PICKER_VARIANTS.len});
 
+    var buf: [16]u8 = undefined;
     const stdin_file = std.Io.File.stdin();
-
-    var buf: [100]u8 = undefined;
     const len = try stdin_file.readStreaming(io, &.{&buf});
-    const input = buf[0..len];
+    const trimmed = std.mem.trim(u8, buf[0..len], &std.ascii.whitespace);
 
-    const trimmed = std.mem.trim(u8, input, &std.ascii.whitespace);
-
-    if (std.mem.eql(u8, trimmed, "1")) {
-        return try allocator.dupe(u8, "patch");
-    } else if (std.mem.eql(u8, trimmed, "2")) {
-        return try allocator.dupe(u8, "minor");
-    } else if (std.mem.eql(u8, trimmed, "3")) {
-        return try allocator.dupe(u8, "major");
-    } else {
+    const choice = std.fmt.parseInt(usize, trimmed, 10) catch {
+        std.debug.print("Invalid selection. Exiting.\n", .{});
+        return error.InvalidSelection;
+    };
+    if (choice < 1 or choice > PICKER_VARIANTS.len) {
         std.debug.print("Invalid selection. Exiting.\n", .{});
         return error.InvalidSelection;
     }
+    return choice - 1;
+}
+
+fn promptCustomVersion(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+    std.debug.print("Enter custom version (e.g. 1.2.3 or 1.2.3-beta.1): ", .{});
+    var buf: [64]u8 = undefined;
+    const stdin_file = std.Io.File.stdin();
+    const len = try stdin_file.readStreaming(io, &.{&buf});
+    const input = std.mem.trim(u8, buf[0..len], &std.ascii.whitespace);
+    _ = parseVersion(input) catch {
+        std.debug.print("Invalid version: {s}\n", .{input});
+        return error.InvalidVersion;
+    };
+    return try allocator.dupe(u8, input);
+}
+
+fn promptForVersion(allocator: std.mem.Allocator, io: std.Io, current_version: []const u8) ![]const u8 {
+    // Precompute the preview "next version" for every non-custom variant.
+    var nexts: [PICKER_VARIANTS.len][]const u8 = undefined;
+    var computed: usize = 0;
+    errdefer for (nexts[0..computed]) |n| allocator.free(n);
+
+    for (PICKER_VARIANTS, 0..) |v, i| {
+        if (std.mem.eql(u8, v.release_type, "custom")) {
+            nexts[i] = try allocator.dupe(u8, "");
+        } else {
+            nexts[i] = try bumpVersion(allocator, current_version, v.release_type);
+        }
+        computed = i + 1;
+    }
+    defer for (nexts) |n| allocator.free(n);
+
+    const selected = if (canUseInteractivePicker())
+        try pickWithArrows(current_version, &nexts)
+    else
+        try pickNumbered(io, current_version, &nexts);
+
+    if (std.mem.eql(u8, PICKER_VARIANTS[selected].release_type, "custom")) {
+        return try promptCustomVersion(allocator, io);
+    }
+
+    std.debug.print("\x1b[32m✓\x1b[0m Selected: \x1b[1m{s}\x1b[0m (\x1b[36m{s}\x1b[0m → \x1b[32m{s}\x1b[0m)\n", .{
+        PICKER_VARIANTS[selected].label,
+        current_version,
+        nexts[selected],
+    });
+    return try allocator.dupe(u8, PICKER_VARIANTS[selected].release_type);
 }
 
 fn printHelp() !void {
@@ -544,11 +760,17 @@ fn printHelp() !void {
         \\USAGE:
         \\    bump [release-type] [options]
         \\    bump                        # Interactive mode
+        \\    bump prompt                 # Interactive mode (explicit)
         \\
         \\RELEASE TYPES:
-        \\    major          Bump major version (1.0.0 -> 2.0.0)
-        \\    minor          Bump minor version (1.0.0 -> 1.1.0)
-        \\    patch          Bump patch version (1.0.0 -> 1.0.1)
+        \\    major          Bump major version       (1.2.3 -> 2.0.0)
+        \\    minor          Bump minor version       (1.2.3 -> 1.3.0)
+        \\    patch          Bump patch version       (1.2.3 -> 1.2.4)
+        \\    premajor       Prerelease major         (1.2.3 -> 2.0.0-alpha.0)
+        \\    preminor       Prerelease minor         (1.2.3 -> 1.3.0-alpha.0)
+        \\    prepatch       Prerelease patch         (1.2.3 -> 1.2.4-alpha.0)
+        \\    prerelease     Increment prerelease     (1.2.4-alpha.0 -> 1.2.4-alpha.1)
+        \\    <version>      Set specific version     (e.g. 1.2.3 or 1.2.3-beta.1)
         \\
         \\GIT OPTIONS:
         \\    -a, --all              Commit, tag, push, and generate changelog

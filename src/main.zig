@@ -577,9 +577,14 @@ const PICKER_VARIANTS = [_]PickerVariant{
     .{ .label = "custom...", .release_type = "custom" },
 };
 
+fn isTty(fd: std.posix.fd_t) bool {
+    _ = std.posix.tcgetattr(fd) catch return false;
+    return true;
+}
+
 fn canUseInteractivePicker() bool {
     if (builtin.os.tag == .windows) return false;
-    return std.c.isatty(std.posix.STDIN_FILENO) != 0 and std.c.isatty(std.posix.STDERR_FILENO) != 0;
+    return isTty(std.posix.STDIN_FILENO) and isTty(std.posix.STDERR_FILENO);
 }
 
 fn drawMenu(current_version: []const u8, nexts: []const []const u8, selected: usize, first_draw: bool) void {
